@@ -26,17 +26,31 @@
 - **Fase 4 — Integración con OpenCode 2**: monitoreo de ramas `Pedivinho/*` hasta `STATUS: READY_FOR_MERGE` en `reports/modeling_report.md`; `git merge` a `main`; `run_pipeline.py` conecta `features.py` → `models.py` → `ensemble.py`.
 - **Fase 5 — GitOps**: commits atómicos por fase, conventional commits, sin Co-Authored-By, push continuo a `origin/main`.
 
-## 4. Hallazgos EDA (pendiente de ejecución)
-- [pendiente]
+## 4. Hallazgos EDA (completado)
+- Se cargaron 171,202 filas de train y 61,500 filas de test.
+- Valores nulos más altos: `EXT_SOURCE_1` (69.5%), `OWN_CAR_AGE` (66%), `EXT_SOURCE_3` (31.9%).
+- Importancia rápida de características (LightGBM): `EXT_SOURCE_2`, `EXT_SOURCE_3`, `DAYS_BIRTH`, `AMT_CREDIT`.
+- Se documentaron decisiones de preprocesamiento (mantener `EXT_SOURCE_1`, tratar OWN_CAR_AGE con decenas, target-encoding para ORGANIZATION_TYPE, etc.).
 
 ## 5. Tablero de métricas CV ROC-AUC
 | Modelo | Fold 1 | Fold 2 | Fold 3 | Fold 4 | Fold 5 | Media ± Std |
 | --- | --- | --- | --- | --- | --- | --- |
-| [pendiente] | | | | | | |
+| rf_tutorial_5feat | 0.6731 | 0.6654 | 0.6695 | 0.6685 | 0.6716 | **0.6696 ± 0.0026** |
+| logreg_full | 0.6331 | 0.6242 | 0.6388 | 0.6299 | 0.6351 | **0.6322 ± 0.0049** |
+| lightgbm | 0.7430 | 0.7500 | 0.7536 | 0.7452 | 0.7513 | **0.7486 ± 0.0039** |
+| xgboost | 0.7420 | 0.7509 | 0.7534 | 0.7424 | 0.7506 | **0.7479 ± 0.0047** |
+| **catboost (MEJOR)** | 0.7494 | 0.7516 | 0.7584 | 0.7495 | 0.7528 | **0.7524 ± 0.0033** |
 
 ## 6. Estado del pipeline
-- [ ] Fase 1 EDA
-- [ ] Fase 2 Baseline
-- [ ] Fase 3 Validador
-- [ ] Fase 4 Merge OpenCode 2
-- [ ] Fase 5 Push final
+- [x] Fase 1 EDA → `reports/eda_summary.md` generada
+- [x] Fase 2 Baseline → `output/submission.csv` generado, CV AUCs guardados en `reports/cv_baseline_results.json`
+- [x] Fase 3 Validador → `src/validate_submission.py` validó exitosamente `output/submission.csv`
+- [ ] Fase 4 Merge OpenCode 2 (pendiente):
+    - Espere hasta `STATUS: READY_FOR_MERGE` en `reports/modeling_report.md` de `Pedivinho/jormungandr` o `Pedivinho/nuckelavee`
+    - Usar `run_pipeline.py` para integrar `features.py` → `models.py` → `ensemble.py`
+- [ ] Fase 5 Push final (pendiente):
+    - `git push` solo después de que OpenCode 2 haya entregado un submission validado
+
+## 7. Subdirectorio del pipeline
+- `output/submission.csv` — submission validado listo para `Omnicampus` (base CatBoost)
+- `reports/cv_baseline_results.json` — detalles completos de CV para torre_de_control.md

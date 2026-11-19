@@ -121,18 +121,23 @@ def build_features(train, test, fit=False):
 
     # --- Encodado de categoricas: ordinal (XNA = -1) ---
     for col in CAT_COLS:
-        if fit:
-            cats = sorted(X_train[col].dropna().unique().tolist())
-            mapping = {v: i for i, v in enumerate(cats)}
-        else:
-            cats = sorted(X_train[col].dropna().unique().tolist())
-            mapping = {v: i for i, v in enumerate(cats)}
+        X_train[col] = X_train[col].fillna('MISSING')
+        X_test[col] = X_test[col].fillna('MISSING')
+        cats = sorted(X_train[col].unique().tolist())
+        mapping = {v: i for i, v in enumerate(cats)}
         X_train[col] = X_train[col].map(mapping).astype('float32')
         X_test[col] = X_test[col].map(mapping).astype('float32')
 
+    # --- Imputación final de seguridad: cualquier NaN/Inf residual ---
+    for col in X_train.columns:
+        if X_train[col].isna().any() or np.isinf(X_train[col].values).any():
+            med = float(X_train[col].replace([np.inf, -np.inf], np.nan).median())
+            X_train[col] = X_train[col].replace([np.inf, -np.inf], np.nan).fillna(med)
+        if X_test[col].isna().any() or np.isinf(X_test[col].values).any():
+            med = float(X_train[col].median())
+            X_test[col] = X_test[col].replace([np.inf, -np.inf], np.nan).fillna(med)
+
     feature_names = X_train.columns.tolist()
-    X_train = X_train.astype('float32')
-    X_test = X_test.astype('float32')
     return X_train, y, X_test, feature_names
 
 
@@ -149,6 +154,8 @@ def cv_evaluate(name, X, y, make_model):
         model = make_model()
         model.fit(X.iloc[tr_idx], y[tr_idx])
         pred = model.predict_proba(X.iloc[va_idx])
+        if pred.ndim == 2:
+            pred = pred[:, 1]
         oof[va_idx] = pred
         auc = roc_auc_score(y[va_idx], pred)
         aucs.append(auc)
@@ -167,7 +174,7 @@ def make_tutorial_rf():
 
 def make_logistic():
     from sklearn.linear_model import LogisticRegression
-    return LogisticRegression(max_iter=1000, C=1.0, n_jobs=N_JOBS, random_state=SEED)
+    return LogisticRegression(max_iter=1000, C=1.0, random_state=SEED)
 
 
 def make_lightgbm():
@@ -266,6 +273,8 @@ def main():
     final_model = maker()
     final_model.fit(X_fit, y)
     pred = final_model.predict_proba(X_test)
+    if pred.ndim == 2:
+        pred = pred[:, 1]
     del final_model
     gc.collect()
 
