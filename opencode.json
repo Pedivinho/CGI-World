@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "read": [
+      "./**"
+    ],
+    "write": [
+      "./**"
+    ],
+    "execute": {
+      "allow": [
+        "git status",
+        "git diff *",
+        "git add *",
+        "git commit *",
+        "npm run *",
+        "npm test *",
+        "npx *"
+      ],
+      "deny": [
+        "rm -rf *",
+        "del /s *",
+        "rmdir /s *",
+        "format *",
+        "cd ..*",
+        "Set-Location ..*",
+        "powershell *",
+        "cmd *"
+      ]
+    }
+  },
+  "sandbox": {
+    "enabled": true,
+    "directoryLock": true,
+    "allowExternalPaths": false
+  }
+}

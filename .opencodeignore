@@ -1,0 +1,9 @@
+../
+../../
+C:/
+D:/Usuario/Entorno-de-pruebas/
+D:/Usuario/ai_workspace/
+.env
+.env.*
+*.key
+*.pem
