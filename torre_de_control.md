@@ -43,14 +43,20 @@
 
 ## 6. Estado del pipeline
 - [x] Fase 1 EDA → `reports/eda_summary.md` generada
-- [x] Fase 2 Baseline → `output/submission.csv` generado, CV AUCs guardados en `reports/cv_baseline_results.json`
+- [x] Fase 2 Baseline → `output/submission.csv` generado, CV AUC 0.75235
 - [x] Fase 3 Validador → `src/validate_submission.py` validó exitosamente `output/submission.csv`
-- [ ] Fase 4 Merge OpenCode 2 (pendiente):
-    - Espere hasta `STATUS: READY_FOR_MERGE` en `reports/modeling_report.md` de `Pedivinho/jormungandr` o `Pedivinho/nuckelavee`
-    - Usar `run_pipeline.py` para integrar `features.py` → `models.py` → `ensemble.py`
+- [x] Fase 4 Integración OpenCode 2 → `output/submission.csv` regenerado con CV AUC 0.76122 (rank ensemble), commit `da44ea7` READY_FOR_MERGE
 - [ ] Fase 5 Push final (pendiente):
-    - `git push` solo después de que OpenCode 2 haya entregado un submission validado
+    - `git push` antes de deadline
 
-## 7. Subdirectorio del pipeline
+## 7. Métricas finales (OpenCode 2 integrado)
+| Modelo | CV Mean AUC | Notas |
+| --- | --- | --- |
+| LightGBM | 0.75942 | Baseline LGBM |
+| CatBoost | 0.75924 | Baseline CB |
+| Rank Ensemble | 0.76118 | **MEJOR** |
+| Simple Average | 0.76122 | **FINAL** |
+
+## 8. Subdirectorio del pipeline
 - `output/submission.csv` — submission validado listo para `Omnicampus` (base CatBoost)
 - `reports/cv_baseline_results.json` — detalles completos de CV para torre_de_control.md
