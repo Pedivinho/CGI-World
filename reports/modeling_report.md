@@ -34,33 +34,33 @@
     - `INCOME_BIN`
     - `EXT_SOURCE_RATIO_1_2`, `EXT_SOURCE_RATIO_2_3`
 - **Results**:
-    - LightGBM: **0.74863** (±0.00395)
-    - XGBoost: **0.74865** (±0.00500)
-    - CatBoost: **0.75235** (±0.00328)
-    - Best Model: **CatBoost** with CV AUC 0.75235
-- **Status**: ✅ Baseline completed
+    - LightGBM: **0.74205**
+    - XGBoost: **0.73451**
+    - **CatBoost: 0.75940** ⭐ (BEST)
+    - Weighted Blend: **0.74364**
+- **Best Model**: **CatBoost** with CV AUC 0.75940
+- **Status**: ✅ Completed
 
 ---
 
-## Final Results (cv_baseline_results.json)
-| Model | CV Mean AUC | CV Std | OOF Predictions |
-|-------|-------------|--------|-----------------|
-| Tutorial RF (5 features) | 0.66963 | 0.00264 | `results/oof_rf.npy` |
-| Logistic Regression | 0.63222 | 0.00492 | `results/oof_lr.npy` |
-| LightGBM | 0.74863 | 0.00395 | `results/oof_lgb.npy` |
-| XGBoost | 0.74865 | 0.00500 | `results/oof_xgb.npy` |
-| **CatBoost** | **0.75235** | **0.00328** | `results/oof_cb.npy` |
-
-**BEST MODEL**: CatBoost with CV AUC 0.75235
+## Final Results (cv_baseline_results.json & iteration_2.py)
+| Model | CV Mean AUC | Status |
+|-------|-------------|--------|
+| CatBoost | **0.75940** | ⭐ Best |
+| LightGBM | 0.74205 | Completed |
+| XGBoost | 0.73451 | Completed |
+| Weighted Blend | 0.74364 | Completed |
+| Tutorial RF (5 features) | 0.66963 | Baseline |
+| Logistic Regression | 0.63222 | Baseline |
 
 ---
 
 ## Model Training Summary
 | Family | Model | OOF AUC |
 |--------|-------|---------|
-| Gradient Boosting | CatBoost | 0.75235 |
-| Gradient Boosting | LightGBM | 0.74863 |
-| Gradient Boosting | XGBoost | 0.74865 |
+| Gradient Boosting | CatBoost | 0.75940 |
+| Gradient Boosting | LightGBM | 0.74205 |
+| Gradient Boosting | XGBoost | 0.73451 |
 | Linear | Logistic Regression | 0.63222 |
 
 ---
@@ -83,6 +83,17 @@
 
 ---
 
+## Performance Progression
+| Iteration | Features | LightGBM | XGBoost | CatBoost | Best |
+|-----------|----------|----------|---------|----------|------|
+| 0 (Anchor) | Basic ratios | 0.74354 | - | - | 0.74354 |
+| 1 | EXT_SOURCE interactions | 0.74929 | 0.74290 | - | 0.74929 |
+| 2 | Enhanced + Age | 0.74205 | 0.73451 | **0.75940** | 0.75940 |
+
+**Improvement vs Anchor**: +0.01586 (CatBoost)
+
+---
+
 ## Next Iteration Plan (k = 3+)
 1. **Iteration 3**: Train XGBoost, optimize blend weights ✅
 2. **Iteration 4**: Stacking logistic regression meta-model [PENDING]
@@ -95,6 +106,6 @@
 
 ## Current Status
 - All models trained and evaluated
-- **Best CV AUC: 0.75235 (CatBoost)**
+- **Best CV AUC: 0.75940 (CatBoost)** ⭐
 - Submission generated and saved to `output/submission.csv`
 - Ready for next iteration with ensemble improvements
