@@ -45,9 +45,8 @@
 - [x] Fase 1 EDA → `reports/eda_summary.md` generada
 - [x] Fase 2 Baseline → `output/submission.csv` generado, CV AUC 0.75235
 - [x] Fase 3 Validador → `src/validate_submission.py` validó exitosamente `output/submission.csv`
-- [x] Fase 4 Integración OpenCode 2 → `output/submission.csv` regenerado con CV AUC 0.76122 (rank ensemble), commit `da44ea7` READY_FOR_MERGE
-- [ ] Fase 5 Push final (pendiente):
-    - `git push` antes de deadline
+- [x] Fase 4 Integración OpenCode 2 → commit `855fc68` READY_FOR_MERGE (multi-seed GBDT ensemble)
+- [x] Fase 5 Push final → `git push origin main` antes del deadline 20:00
 
 ## 7. Métricas finales (OpenCode 2 integrado)
 | Modelo | CV Mean AUC | Notas |
