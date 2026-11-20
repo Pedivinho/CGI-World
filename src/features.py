@@ -1,31 +1,38 @@
 """
-Feature engineering pipeline - Home Credit Default Risk
-=======================================================
+Feature engineering pipeline - Home Credit Default Risk (competitive sprint)
+============================================================================
 
-Leak-free features shared by train and test (built on the concatenated
+Leak-free feature matrix shared by train and test (built on the concatenated
 frame so statistics are computed identically for both):
 
-- Cleaning: DAYS_EMPLOYED == 365243 -> NaN + anomaly flag
-- Financial ratios (credit, annuity, goods price vs income)
-- EXT_SOURCE stats: mean/std/min/max/median, sum, var, triple product
-- EXT_SOURCE pairwise differences and ratios (guarding against 0)
-- EXT_SOURCE squared terms
-- Age features: years, bins, employment/income interactions
-- Bureau request stats across HOUR/MON/QRT/YEAR
+- Cleaning: DAYS_EMPLOYED == 365243 -> NaN + DAYS_EMPLOYED_ANOM flag
+- Financial ratios: CREDIT_TO_ANNUITY_RATIO (loan term in months),
+  ANNUITY_TO_INCOME_RATIO, CREDIT_TO_INCOME_RATIO, CREDIT_TO_GOODS_RATIO,
+  CREDIT_GOODS_DIFF (over-financing), per-person / per-child income
+- EXT_SOURCE block: mean/std/min/max/sum/median, product (raw + imputed),
+  pairwise diffs and safe ratios, weighted combination, squares, sqrts,
+  exact null counts and per-source ISNA indicators
+- Age / employment: years, employment-to-birth ratios, car-to-birth/employed,
+  phone/id publish to birth ratios
+- Bureau request SUM and MAX over AMT_REQ_CREDIT_BUREAU_*
+- Categorical interactions: GENDER_EDU, INCOME_ORG, CONTRACT_GENDER
+- Frequency encoding (normalized counts fit on train+test) for all
+  categorical columns and interactions
+- Group aggregations (mean, std, val-mean diff, val/(mean+eps) ratio) of
+  EXT_SOURCE_MEAN/2/3, AMT_CREDIT, AMT_INCOME_TOTAL, CREDIT_TO_ANNUITY_RATIO,
+  DAYS_BIRTH grouped by ORGANIZATION_TYPE, OCCUPATION_TYPE,
+  NAME_EDUCATION_TYPE, NAME_INCOME_TYPE, GENDER_EDU
+- One-hot encoding for the 8 base categorical columns
 - Null count per row
-- Group aggregations (ORGANIZATION_TYPE / NAME_INCOME_TYPE /
-  NAME_EDUCATION_TYPE x AMT_CREDIT / AMT_INCOME_TOTAL): mean, std, min, max
-- One-hot encoding for the 8 categorical columns
 
-Target encoding (iteration 4) is applied OUT-OF-FOLD inside the training
-folds only (see TargetEncoder below) so that neither OOF AUC nor test
-predictions leak the target.
+Smoothed target encoding (m=20) is applied STRICTLY OUT-OF-FOLD inside the
+training folds (see fit_smoothed_target_encoding below); it never enters
+build_features, so no target information leaks into the static matrix.
 
-All numeric outputs are downcast to float32 / int32 for memory efficiency.
+All numeric outputs are downcast to float32 / int32.
 """
 
 import gc
-import re
 
 import numpy as np
 import pandas as pd
@@ -42,27 +49,57 @@ CAT_COLUMNS = [
     "ORGANIZATION_TYPE",
 ]
 
-EXT_SOURCES = ["EXT_SOURCE_1", "EXT_SOURCE_2", "EXT_SOURCE_3"]
-GROUP_COLS = ["ORGANIZATION_TYPE", "NAME_INCOME_TYPE", "NAME_EDUCATION_TYPE"]
-NUM_AGG_COLS = ["AMT_CREDIT", "AMT_INCOME_TOTAL"]
-TARGET_ENCODED_COLS = [
+# Categorical columns used for frequency encoding (base + interactions)
+FE_CAT_COLUMNS = [
     "NAME_CONTRACT_TYPE",
     "CODE_GENDER",
+    "NAME_INCOME_TYPE",
+    "NAME_EDUCATION_TYPE",
     "NAME_FAMILY_STATUS",
     "NAME_HOUSING_TYPE",
     "OCCUPATION_TYPE",
     "ORGANIZATION_TYPE",
+    "GENDER_EDU",
+    "INCOME_ORG",
+    "CONTRACT_GENDER",
 ]
 
+# Categorical columns receiving out-of-fold smoothed target encoding (m=20)
+TARGET_ENCODED_COLS = [
+    "ORGANIZATION_TYPE",
+    "OCCUPATION_TYPE",
+    "NAME_EDUCATION_TYPE",
+    "NAME_INCOME_TYPE",
+    "GENDER_EDU",
+]
+
+GROUP_COLS = [
+    "ORGANIZATION_TYPE",
+    "OCCUPATION_TYPE",
+    "NAME_EDUCATION_TYPE",
+    "NAME_INCOME_TYPE",
+    "GENDER_EDU",
+]
+
+GROUP_AGG_VARS = [
+    "EXT_SOURCE_MEAN",
+    "EXT_SOURCE_2",
+    "EXT_SOURCE_3",
+    "AMT_CREDIT",
+    "AMT_INCOME_TOTAL",
+    "CREDIT_TO_ANNUITY_RATIO",
+    "DAYS_BIRTH",
+]
+
+EXT_SOURCES = ["EXT_SOURCE_1", "EXT_SOURCE_2", "EXT_SOURCE_3"]
+
 _MISSING = "__NA__"
+_EPS = 1e-5
 
 
-def sanitize_name(name):
-    """Make a column name safe (no special chars, no leading digit)."""
-    sanitized = re.sub(r"[^a-zA-Z0-9_]+", "_", str(name)).strip("_")
-    if sanitized and sanitized[0].isdigit():
-        sanitized = "col_" + sanitized
-    return sanitized if sanitized else "unnamed_col"
+def _to_str_col(s):
+    """Object column with NaN replaced by the explicit missing token."""
+    return s.astype("object").where(s.notna(), _MISSING)
 
 
 def _fill_cat(df, cols):
@@ -70,12 +107,12 @@ def _fill_cat(df, cols):
     out = df.copy()
     for col in cols:
         if col in out.columns:
-            out[col] = out[col].astype("object").fillna(_MISSING)
+            out[col] = _to_str_col(out[col])
     return out
 
 
-def _safe_div(num, den, eps=1e-6):
-    return num / (den.abs() + eps)
+def _safe_div(num, den, eps=_EPS):
+    return num / (den + eps)
 
 
 def build_features(train_df, test_df):
@@ -94,8 +131,9 @@ def build_features(train_df, test_df):
         test_proc has no TARGET. Column order is identical in both.
     """
     df = pd.concat([train_df, test_df], axis=0, ignore_index=True)
+    df = df.astype({c: np.float32 for c in df.select_dtypes(include="float64").columns})
 
-    # --- 0. Cleaning -------------------------------------------------------
+    # --- 0. Cleaning --------------------------------------------------------
     df["DAYS_EMPLOYED_ANOM"] = (df["DAYS_EMPLOYED"] == 365243).astype("int32")
     df.loc[df["DAYS_EMPLOYED"] == 365243, "DAYS_EMPLOYED"] = np.nan
 
@@ -104,94 +142,105 @@ def build_features(train_df, test_df):
     annuity = df["AMT_ANNUITY"]
     goods = df["AMT_GOODS_PRICE"]
 
-    # --- 1. Financial ratios -----------------------------------------------
-    df["CREDIT_INCOME_PERCENT"] = _safe_div(credit, income)
-    df["ANNUITY_INCOME_PERCENT"] = _safe_div(annuity, income)
-    df["CREDIT_ANNUITY_RATIO"] = _safe_div(credit, annuity)
-    df["CREDIT_GOODS_RATIO"] = _safe_div(credit, goods)
-    df["INCOME_PER_FAMILY_MEMBER"] = _safe_div(income, df["CNT_FAM_MEMBERS"].replace(0, 1))
-    df["CREDIT_PER_FAMILY_MEMBER"] = _safe_div(credit, df["CNT_FAM_MEMBERS"].replace(0, 1))
-    df["INCOME_PER_CHILD"] = _safe_div(income, df["CNT_CHILDREN"].replace(0, 1))
+    # --- 1. Financial ratios -------------------------------------------------
+    # Loan term in months - the #1 domain feature of Home Credit
+    df["CREDIT_TO_ANNUITY_RATIO"] = _safe_div(credit, annuity)
+    df["ANNUITY_TO_INCOME_RATIO"] = _safe_div(annuity, income)
+    df["CREDIT_TO_INCOME_RATIO"] = _safe_div(credit, income)
+    df["CREDIT_TO_GOODS_RATIO"] = _safe_div(credit, goods)
+    df["CREDIT_GOODS_DIFF"] = (credit - goods).astype("float32")
+    df["INCOME_PER_PERSON"] = _safe_div(income, df["CNT_FAM_MEMBERS"])
+    df["INCOME_PER_CHILD"] = income / (1 + df["CNT_CHILDREN"])
+    df["CHILDREN_RATIO"] = _safe_div(df["CNT_CHILDREN"], df["CNT_FAM_MEMBERS"])
 
-    # --- 2. EXT_SOURCE stats (iterations 1-3) ------------------------------
+    # --- 2. EXT_SOURCE block (maximum priority) -------------------------------
     ext = df[EXT_SOURCES]
-    df["EXT_SOURCES_MEAN"] = ext.mean(axis=1)
-    df["EXT_SOURCES_STD"] = ext.std(axis=1)
-    df["EXT_SOURCES_MIN"] = ext.min(axis=1)
-    df["EXT_SOURCES_MAX"] = ext.max(axis=1)
-    df["EXT_SOURCES_MEDI"] = ext.median(axis=1)
-    df["EXT_SOURCES_RANGE"] = ext.max(axis=1) - ext.min(axis=1)
-    df["EXT_SOURCES_SUM"] = ext.sum(axis=1, min_count=1)
-    df["EXT_SOURCES_VAR"] = ext.var(axis=1)
-    df["EXT_SOURCE_1_2_3_PROD"] = (
-        df["EXT_SOURCE_1"] * df["EXT_SOURCE_2"] * df["EXT_SOURCE_3"]
+    ext_imp = ext.fillna(0.0)
+    df["EXT_SOURCE_MEAN"] = ext.mean(axis=1)
+    df["EXT_SOURCE_STD"] = ext.std(axis=1)
+    df["EXT_SOURCE_MIN"] = ext.min(axis=1)
+    df["EXT_SOURCE_MAX"] = ext.max(axis=1)
+    df["EXT_SOURCE_SUM"] = ext_imp.sum(axis=1)
+    df["EXT_SOURCE_PROD"] = (ext_imp[EXT_SOURCES[0]] * ext_imp[EXT_SOURCES[1]] * ext_imp[EXT_SOURCES[2]]).astype("float32")
+    df["EXT_SOURCES_RANGE"] = (ext.max(axis=1) - ext.min(axis=1)).astype("float32")
+    df["EXT_SOURCE_1_MINUS_2"] = (ext[EXT_SOURCES[0]] - ext[EXT_SOURCES[1]]).astype("float32")
+    df["EXT_SOURCE_2_MINUS_3"] = (ext[EXT_SOURCES[1]] - ext[EXT_SOURCES[2]]).astype("float32")
+    df["EXT_SOURCE_1_MINUS_3"] = (ext[EXT_SOURCES[0]] - ext[EXT_SOURCES[2]]).astype("float32")
+    df["EXT_1_OVER_2"] = _safe_div(ext[EXT_SOURCES[0]], ext[EXT_SOURCES[1]])
+    df["EXT_2_OVER_3"] = _safe_div(ext[EXT_SOURCES[1]], ext[EXT_SOURCES[2]])
+    df["EXT_SOURCE_WEIGHTED"] = (
+        ext[EXT_SOURCES[0]] * 2 + ext[EXT_SOURCES[1]] * 3 + ext[EXT_SOURCES[2]] * 4
     )
-    df["EXT_SOURCE_1_MINUS_2"] = df["EXT_SOURCE_1"] - df["EXT_SOURCE_2"]
-    df["EXT_SOURCE_2_MINUS_3"] = df["EXT_SOURCE_2"] - df["EXT_SOURCE_3"]
-    df["EXT_SOURCE_1_MINUS_3"] = df["EXT_SOURCE_1"] - df["EXT_SOURCE_3"]
-    df["EXT_SOURCE_1_OVER_2"] = _safe_div(df["EXT_SOURCE_1"], df["EXT_SOURCE_2"])
-    df["EXT_SOURCE_2_OVER_3"] = _safe_div(df["EXT_SOURCE_2"], df["EXT_SOURCE_3"])
-    df["EXT_SOURCE_1_OVER_3"] = _safe_div(df["EXT_SOURCE_1"], df["EXT_SOURCE_3"])
-    df["EXT_SOURCES_NA_COUNT"] = ext.isna().sum(axis=1)
-    df["EXT_SOURCE_1_SQ"] = df["EXT_SOURCE_1"] ** 2
-    df["EXT_SOURCE_2_SQ"] = df["EXT_SOURCE_2"] ** 2
-    df["EXT_SOURCE_3_SQ"] = df["EXT_SOURCE_3"] ** 2
+    df["EXT_SOURCE_1_SQ"] = ext[EXT_SOURCES[0]] ** 2
+    df["EXT_SOURCE_2_SQ"] = ext[EXT_SOURCES[1]] ** 2
+    df["EXT_SOURCE_3_SQ"] = ext[EXT_SOURCES[2]] ** 2
+    df["EXT_SOURCE_1_SQRT"] = np.sqrt(ext[EXT_SOURCES[0]].fillna(0.0).clip(lower=0.0))
+    df["EXT_SOURCE_2_SQRT"] = np.sqrt(ext[EXT_SOURCES[1]].fillna(0.0).clip(lower=0.0))
+    df["EXT_SOURCE_3_SQRT"] = np.sqrt(ext[EXT_SOURCES[2]].fillna(0.0).clip(lower=0.0))
+    df["EXT_SOURCE_NA_COUNT"] = ext.isna().sum(axis=1).astype("int32")
+    df["EXT_1_ISNA"] = ext[EXT_SOURCES[0]].isna().astype("int32")
+    df["EXT_2_ISNA"] = ext[EXT_SOURCES[1]].isna().astype("int32")
+    df["EXT_3_ISNA"] = ext[EXT_SOURCES[2]].isna().astype("int32")
 
-    # --- 3. Age / employment features --------------------------------------
-    age = -df["DAYS_BIRTH"] / 365.0
+    # --- 3. Age / employment / car / phone ------------------------------------
+    age = (-df["DAYS_BIRTH"] / 365.0).astype("float32")
     df["AGE_YEARS"] = age
     df["AGE_BIN"] = pd.cut(
         age, bins=[0, 25, 35, 45, 55, 120], labels=False
     ).astype("float32")
-    df["DAYS_BIRTH_YEARS"] = df["DAYS_BIRTH"] / 365.0
-    df["DAYS_EMPLOYED_YEARS"] = df["DAYS_EMPLOYED"] / 365.0
-    df["DAYS_BIRTH_YEARS"] = df["DAYS_BIRTH"] / 365.0
-    df["DAYS_EMPLOYED_PERCENT"] = _safe_div(df["DAYS_EMPLOYED"], df["DAYS_BIRTH"])
-    df["AGE_INCOME_INTERACTION"] = age * (income / 1e4)
-    df["AGE_CREDIT_RATIO"] = _safe_div(age, credit / 1e3 + 1.0)
-    df["ID_PUBLISH_YEARS"] = df["DAYS_ID_PUBLISH"] / 365.0
-    df["REGISTRATION_YEARS"] = df["DAYS_REGISTRATION"] / 365.0
-    df["LAST_PHONE_CHANGE_YEARS"] = df["DAYS_LAST_PHONE_CHANGE"] / 365.0
+    emp_years = (df["DAYS_EMPLOYED"] / 365.0).astype("float32")
+    df["DAYS_EMPLOYED_YEARS"] = emp_years
+    df["EMPLOYED_TO_BIRTH_RATIO"] = _safe_div(df["DAYS_EMPLOYED"], df["DAYS_BIRTH"])
+    df["DAYS_EMPLOYED_DIFF"] = (df["DAYS_BIRTH"] - df["DAYS_EMPLOYED"]).astype("float32")
+    df["CAR_TO_BIRTH_RATIO"] = _safe_div(df["OWN_CAR_AGE"], age)
+    df["CAR_TO_EMPLOYED_RATIO"] = _safe_div(df["OWN_CAR_AGE"], emp_years)
+    df["PHONE_TO_BIRTH_RATIO"] = _safe_div(df["DAYS_LAST_PHONE_CHANGE"], df["DAYS_BIRTH"])
+    df["ID_TO_BIRTH_RATIO"] = _safe_div(df["DAYS_ID_PUBLISH"], df["DAYS_BIRTH"])
 
-    # --- 4. Bureau request stats -------------------------------------------
+    # --- 4. Bureau request stats ----------------------------------------------
     bureau_cols = [c for c in df.columns if c.startswith("AMT_REQ_CREDIT_BUREAU")]
     bureau = df[bureau_cols]
-    df["BUREAU_REQS_SUM"] = bureau.sum(axis=1)
-    df["BUREAU_REQS_MEAN"] = bureau.mean(axis=1)
-    df["BUREAU_REQS_STD"] = bureau.std(axis=1)
-    df["BUREAU_REQS_MAX"] = bureau.max(axis=1)
-    df["BUREAU_REQS_YEAR_VS_QRT"] = _safe_div(
-        df["AMT_REQ_CREDIT_BUREAU_YEAR"], df["AMT_REQ_CREDIT_BUREAU_QRT"]
-    )
+    df["BUREAU_REQ_SUM"] = bureau.sum(axis=1).astype("float32")
+    df["BUREAU_REQ_MAX"] = bureau.max(axis=1).astype("float32")
 
-    # --- 5. Null count (over raw columns, computed before encoding) --------
-    df["NULL_COUNT"] = df.isna().sum(axis=1)
+    # --- 5. Null count (over raw columns, before encodings) --------------------
+    df["NULL_COUNT"] = df.isna().sum(axis=1).astype("int32")
 
-    # --- 6. Group aggregations (iteration 4) --------------------------------
-    filled = _fill_cat(df, GROUP_COLS)
+    # --- 6. Categorical interactions -------------------------------------------
+    filled = _fill_cat(df, CAT_COLUMNS)
+    df["GENDER_EDU"] = filled["CODE_GENDER"] + "_" + filled["NAME_EDUCATION_TYPE"]
+    df["INCOME_ORG"] = filled["NAME_INCOME_TYPE"] + "_" + filled["ORGANIZATION_TYPE"]
+    df["CONTRACT_GENDER"] = filled["NAME_CONTRACT_TYPE"] + "_" + filled["CODE_GENDER"]
+
+    # --- 7. Frequency encoding (fit on train+test, non-target statistics) -------
+    for col in FE_CAT_COLUMNS:
+        vc = df[col].value_counts(normalize=True)
+        df[f"FREQ_{col}"] = df[col].map(vc).fillna(0.0).astype("float32")
+
+    # --- 8. Group aggregations (fit on train+test, non-target statistics) -------
+    group_cols_dict = {}
     for col in GROUP_COLS:
-        for num in NUM_AGG_COLS:
-            grp = filled.groupby(col)[num]
-            df[f"{col}_{num}_MEAN"] = grp.transform("mean")
-            df[f"{col}_{num}_STD"] = grp.transform("std")
-            df[f"{col}_{num}_MIN"] = grp.transform("min")
-            df[f"{col}_{num}_MAX"] = grp.transform("max")
-    df["ORG_EMPLOYED_YEARS_MEAN"] = (
-        df.groupby("ORGANIZATION_TYPE")["DAYS_EMPLOYED_YEARS"].transform("mean")
-    )
-    df["ORG_NULL_COUNT_MEAN"] = df.groupby("ORGANIZATION_TYPE")[
-        "NULL_COUNT"
-    ].transform("mean")
+        grp = df.groupby(col)
+        for var in GROUP_AGG_VARS:
+            gmean = grp[var].transform("mean")
+            gstd = grp[var].transform("std")
+            group_cols_dict[f"G_{col}_{var}_MEAN"] = gmean.astype("float32")
+            group_cols_dict[f"G_{col}_{var}_STD"] = gstd.astype("float32")
+            group_cols_dict[f"G_{col}_{var}_DIFF"] = (df[var] - gmean).astype("float32")
+            group_cols_dict[f"G_{col}_{var}_RATIO"] = _safe_div(df[var], gmean)
 
-    # --- 7. One-hot encoding -------------------------------------------------
-    dummies = pd.get_dummies(df[CAT_COLUMNS], prefix=CAT_COLUMNS)
+    df = pd.concat([df, pd.DataFrame(group_cols_dict, index=df.index)], axis=1)
+    del group_cols_dict
+
+    # --- 9. One-hot encoding ------------------------------------------------------
+    dummies = pd.get_dummies(filled[CAT_COLUMNS], prefix=CAT_COLUMNS)
     dummies.columns = [sanitize_name(c) for c in dummies.columns]
     dummies = dummies.astype("float32")
     df = pd.concat([df, dummies], axis=1)
-    df = df.drop(columns=CAT_COLUMNS)
-    del dummies
+    df = df.drop(columns=FE_CAT_COLUMNS)
+    del dummies, filled
 
-    # --- 8. Split back and downcast ------------------------------------------
+    # --- 10. Split back and downcast -----------------------------------------------
     mask = df["TARGET"].notna()
     train_proc = df[mask].copy()
     test_proc = df[~mask].drop(columns=["TARGET"]).copy()
@@ -210,67 +259,106 @@ def build_features(train_df, test_df):
     return train_proc, test_proc
 
 
-class TargetEncoder:
-    """
-    Out-of-fold target encoder with Bayesian smoothing.
+def sanitize_name(name):
+    """Make a column name safe (no special chars, no leading digit)."""
+    import re
 
-    Fit on the training part of a fold only, then transform the validation
-    part and the test set. This keeps OOF AUC an honest estimate and test
-    predictions leakage-free.
-
-    encoding = (n_pos + m * g) / (n + m)
-
-    where n_pos/n are the per-category positives/count in the fit data,
-    g is the global positive rate of the fit data, and m is a smoothing
-    strength pulling rare categories toward the global rate.
-    """
-
-    def __init__(self, smoothing=30):
-        self.smoothing = smoothing
-        self.stats_ = None
-        self.global_rate_ = 0.5
-
-    def fit(self, cat_df, y):
-        """cat_df: DataFrame with the categorical columns (NaN-filled)."""
-        stats = {}
-        global_rate = float(np.asarray(y, dtype=np.float64).mean())
-        for col in cat_df.columns:
-            s = pd.Series(
-                np.asarray(y, dtype=np.float64), index=cat_df[col].to_numpy()
-            ).groupby(level=0)
-            stats[col] = {
-                "n": s.size().to_dict(),
-                "npos": s.sum().to_dict(),
-            }
-        self.stats_ = stats
-        self.global_rate_ = global_rate
-        return self
-
-    def transform(self, cat_df):
-        """Return DataFrame of encoded columns named '{col}_TE'."""
-        out = {}
-        for col in cat_df.columns:
-            table = self.stats_[col]
-            cats = cat_df[col].to_numpy()
-            n = np.array([table["n"].get(c, 0) for c in cats], dtype=np.float64)
-            npos = np.array([table["npos"].get(c, 0) for c in cats], dtype=np.float64)
-            enc = (npos + self.smoothing * self.global_rate_) / (
-                n + self.smoothing
-            )
-            # Unknown categories (should not happen) fall back to global rate
-            unknown = n == 0
-            enc[unknown] = self.global_rate_
-            out[f"{col}_TE"] = enc.astype(np.float32)
-        return pd.DataFrame(out, index=cat_df.index)
+    sanitized = re.sub(r"[^a-zA-Z0-9_]+", "_", str(name)).strip("_")
+    if sanitized and sanitized[0].isdigit():
+        sanitized = "col_" + sanitized
+    return sanitized if sanitized else "unnamed_col"
 
 
-def get_target_encoding_cats(train_df, test_df):
+def get_target_encoding_cats(train_df, test_df, cols=None):
     """
     Build the NaN-filled categorical frames used for OOF target encoding.
 
     Returns (train_cats, test_cats, col_names) where both frames have the
-    same column order and the same index order as the raw inputs.
+    same column order and the same row order as the raw inputs.
     """
-    train_cats = _fill_cat(train_df, TARGET_ENCODED_COLS)
-    test_cats = _fill_cat(test_df, TARGET_ENCODED_COLS)
-    return train_cats, test_cats, list(TARGET_ENCODED_COLS)
+    cols = cols if cols is not None else TARGET_ENCODED_COLS
+
+    train_cats = _fill_cat(train_df, CAT_COLUMNS)
+    test_cats = _fill_cat(test_df, CAT_COLUMNS)
+    train_cats["GENDER_EDU"] = (
+        train_cats["CODE_GENDER"] + "_" + train_cats["NAME_EDUCATION_TYPE"]
+    )
+    test_cats["GENDER_EDU"] = (
+        test_cats["CODE_GENDER"] + "_" + test_cats["NAME_EDUCATION_TYPE"]
+    )
+
+    order = [c for c in cols if c in train_cats.columns]
+    return (
+        train_cats[order].reset_index(drop=True),
+        test_cats[order].reset_index(drop=True),
+        order,
+    )
+
+
+def fit_smoothed_target_encoding(y, cat_values, smoothing=20):
+    """
+    Compute smoothed target encoding statistics on ONE fold's training part.
+
+    encoding = (n_pos + m * g) / (n + m)
+
+    where n_pos/n are the per-category positives/count in the fit data,
+    g is the global positive rate of the fit data, and m is the smoothing
+    strength pulling rare categories toward the global rate.
+
+    Parameters
+    ----------
+    y : array-like, shape (n,)
+        Binary targets of the training part of the fold.
+    cat_values : array-like, shape (n,)
+        Categorical values (string token for missing) of the training part.
+
+    Returns
+    -------
+    (stats, global_rate) where stats is dict {category: (n, npos)}.
+    """
+    y_arr = np.asarray(y, dtype=np.float64)
+    cats = np.asarray(cat_values)
+    global_rate = float(y_arr.mean()) if len(y_arr) else 0.5
+    df = pd.DataFrame({"cat": cats, "y": y_arr})
+    grouped = df.groupby("cat")["y"]
+    counts = grouped.size()
+    sums = grouped.sum()
+    stats = {c: (int(counts[c]), float(sums[c])) for c in counts.index}
+    return stats, global_rate
+
+
+def transform_target_encoding(stats, global_rate, cat_values, smoothing=20):
+    """
+    Apply smoothed target encoding using statistics fit on a fold's
+    training part (out-of-fold by construction). Unknown categories fall
+    back to the global positive rate.
+    """
+    cats = np.asarray(cat_values, dtype=object)
+    # Vectorize lookup via a dict-backed Series
+    keys = np.array(list(stats.keys()), dtype=object)
+    n_arr = np.array([stats[k][0] for k in keys], dtype=np.float64)
+    npos_arr = np.array([stats[k][1] for k in keys], dtype=np.float64)
+    lookup = pd.Series(npos_arr, index=pd.Series(keys)).to_dict()
+    n_lookup = pd.Series(n_arr, index=pd.Series(keys)).to_dict()
+
+    n = np.array([n_lookup.get(c, 0.0) for c in cats], dtype=np.float64)
+    npos = np.array([lookup.get(c, 0.0) for c in cats], dtype=np.float64)
+    enc = (npos + smoothing * global_rate) / (n + smoothing)
+    unknown = n == 0
+    enc[unknown] = global_rate
+    return enc.astype(np.float32)
+
+
+def get_oof_target_encoder(smoothing=20):
+    """
+    Return a helper that produces out-of-fold smoothed target encodings.
+
+    Usage inside a training fold (skf indices tr/va, raw cat frames):
+        oof_te[va] = te(cat_train_va, y[tr], cat_raw_va)
+        test_te += te(cat_raw, y[tr], cat_raw_te)/nfold
+    """
+    def te(cat_fit, y_fit, cat_target):
+        stats, g = fit_smoothed_target_encoding(y_fit, cat_fit, smoothing=smoothing)
+        return transform_target_encoding(stats, g, cat_target, smoothing=smoothing)
+
+    return te

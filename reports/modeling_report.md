@@ -111,3 +111,65 @@
 | 4 | Tuned + Stacking | 0.76026 | - | 0.76018 | 0.75690 | **0.76043** |
 
 **Final Best CV AUC: 0.76043** (Stacked ensemble) ⭐
+
+---
+
+## Iteration 9 - COMPETITIVE SPRINT - COMPLETED ✅
+
+### Hypothesis
+The 0.7612 plateau was caused by LR (0.741) and ExtraTrees (0.736) diluting the
+ensemble. Solution: **GBDT-only multi-seed ensemble** plus high-impact domain
+features (EXT_SOURCE block, financial ratios, group aggregations, frequency
+encoding, OOF smoothed target encoding).
+
+### New Features (326 base + 5 OOF TE = 331)
+- EXT_SOURCE block: mean/std/min/max/sum/prod, pairwise diffs & ratios,
+  weighted combo (2·E1+3·E2+4·E3), squares, sqrts, NA-count, ISNA indicators
+- Financial ratios: CREDIT_TO_ANNUITY_RATIO (loan term in months),
+  ANNUITY_TO_INCOME, CREDIT_TO_INCOME, CREDIT_TO_GOODS, CREDIT_GOODS_DIFF,
+  INCOME_PER_PERSON, INCOME_PER_CHILD, CHILDREN_RATIO
+- Age/employment: AGE_YEARS, AGE_BIN, EMPLOYED_TO_BIRTH, CAR_TO_BIRTH,
+  CAR_TO_EMPLOYED, PHONE_TO_BIRTH, ID_TO_BIRTH, DAYS_EMPLOYED_ANOM
+- Bureau: BUREAU_REQ_SUM, BUREAU_REQ_MAX
+- Categorical interactions: GENDER_EDU, INCOME_ORG, CONTRACT_GENDER
+- Frequency encoding (11 cols), group aggregations (5 groups × 7 vars × 4 aggs)
+- OOF smoothed target encoding (m=20) computed strictly inside folds
+
+### Multi-Seed GBDT Results (seeds [42, 2024, 777], 5-fold OOF)
+| Model | OOF ROC-AUC |
+|-------|-------------|
+| LightGBM multi-seed | **0.76087** |
+| XGBoost multi-seed | 0.76063 |
+| CatBoost multi-seed | 0.76046 |
+
+### GBDT-Only Ensemble (Nelder-Mead optimization)
+| Ensemble | OOF ROC-AUC | Weights (LGBM/CB/XGB) |
+|----------|-------------|----------------------|
+| **Prob blend** | **0.76187** ⭐ | 0.479 / 0.444 / 0.077 |
+| Rank blend | 0.76186 | 0.466 / 0.449 / 0.085 |
+| Simple avg | 0.76178 | 0.333 / 0.333 / 0.333 |
+
+**Improvement vs previous best (0.7612): +0.00067** (0.76187)
+**Improvement vs Stacked (0.76043): +0.00144**
+
+### Key Insights
+- Multi-seed averaging lifted LGBM from 0.76046 (single seed) to 0.76087
+- GBDT-only ensemble outperforms the LR/ET-diluted stacked ensemble
+- Probabilistic Nelder-Mead blend is marginally better than rank blend
+- Submission regenerated: 61,500 rows, `SK_ID_CURR` + `TARGET`, no nulls
+
+### Files Modified
+1. ✅ `src/features.py` - EXT_SOURCE block, financial ratios, group aggs, freq encoding, OOF TE
+2. ✅ `src/models.py` - Multi-seed LGBM/XGBoost/CatBoost, legacy API preserved
+3. ✅ `src/ensemble.py` - GBDT-only Nelder-Mead ensemble, `run_competitive_pipeline`
+4. ✅ `reports/modeling_report.md` - This document
+5. ✅ `output/submission.csv` - Final submission (61,500 rows)
+
+### Constraints (unchanged)
+- Random State: 42 (fixed everywhere)
+- n_jobs: 4 (memory constraint)
+- float32 / int32 dtypes
+- train.csv sorted by SK_ID_CURR before CV
+- StratifiedKFold(5, shuffle=True, random_state=42)
+
+STATUS: READY_FOR_MERGE
